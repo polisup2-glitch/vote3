@@ -425,7 +425,7 @@
           <div class="form-grid">
             <input id="guestName" class="input" type="text" maxlength="20" placeholder="이름 또는 익명" />
             <textarea id="guestMessage" class="textarea" maxlength="500" placeholder="방명록 내용을 입력해주세요."></textarea>
-            <button id="submitGuestbookBtn" class="btn btn-primary" type="button">방명록 저장</button>
+            <button id="submitGuestbookBtn" class="btn btn-primary" type="button">전송</button>
           </div>
           <p class="helper">이름을 비워두면 자동으로 ‘익명’으로 저장됩니다.</p>
 
@@ -452,6 +452,33 @@
     </div>
   </div>
 
+  <!-- Firebase SDK (Realtime Database) -->
+  <!--
+    1) Firebase 프로젝트 생성
+      - https://console.firebase.google.com/
+    2) Realtime Database 활성화
+      - Build 탭 -> Realtime Database -> Create database
+    3) 웹 앱 등록 후 Firebase 설정값 복사
+      - Project settings -> General -> Your apps -> Firebase SDK snippet
+    4) 아래 `firebaseConfig`의 값을 본인 프로젝트 값으로 교체
+    5) (중요) Database Rules 설정
+      - 지금 코드는 데모 목적이라 읽기/쓰기 권한을 완전히 막지는 않습니다.
+      - 실제 서비스에서는 반드시 규칙을 보안적으로 설정하세요.
+      - 예: read/write를 무조건 허용하면 누구나 데이터를 조작할 수 있습니다.
+
+      - 데모로 빠르게 테스트하려면(비권장, 테스트 전용):
+        Realtime Database -> Rules 에서 아래처럼 임시 허용 후,
+        동작 확인 후에는 반드시 보안 규칙으로 바꿔주세요.
+          {
+            "rules": {
+              ".read": true,
+              ".write": true
+            }
+          }
+  -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
   <script>
     const ADMIN_PASSWORD = "admin1234";
 
@@ -462,15 +489,131 @@
       admin: "vote_guestbook_admin_v2"
     };
 
+    // =========================
+    // Firebase Realtime Database
+    // =========================
+    // 아래 firebaseConfig에 Firebase 프로젝트 설정값을 넣어주세요.
+    // (Firebase Console -> Project settings -> Firebase SDK snippet 복사)
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      databaseURL: "YOUR_DATABASE_URL",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_STORAGE_BUCKET",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    let firebaseMode = false; // true면 votes/guestbook을 Firebase에서 읽고 씁니다.
+    let db = null; // firebase.database()
+    let votesState = null; // Firebase에서 내려온 votes (배열)
+    let guestbookState = null; // Firebase에서 내려온 guestbook (배열)
+    let didSeedDefaultVotes = false; // 기본 후보 3개 자동 생성 1회만
+
+    function firebaseConfigReady(cfg) {
+      return (
+        cfg &&
+        typeof cfg.apiKey === "string" &&
+        cfg.apiKey.length > 0 &&
+        !cfg.apiKey.startsWith("YOUR_")
+      );
+    }
+
+    function initFirebaseRealtime() {
+      try {
+        if (!firebaseConfigReady(firebaseConfig)) {
+          console.warn(
+            "[Firebase] firebaseConfig가 아직 설정되지 않았습니다. localStorage 모드로 동작합니다."
+          );
+          return;
+        }
+
+        // Firebase 초기화 (compat 사용)
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.database();
+        firebaseMode = true;
+
+        // ---- votes: /votes/{voteId} = { title, count, createdAt } ----
+        const votesRef = db.ref("votes");
+        votesRef.on("value", (snapshot) => {
+          const data = snapshot.val();
+          const entries = data && typeof data === "object" ? Object.entries(data) : [];
+
+          if (entries.length === 0) {
+            votesState = [];
+
+            // 기본 후보 3개 자동 시딩 (한 번만)
+            if (!didSeedDefaultVotes) {
+              didSeedDefaultVotes = true;
+              const seed = {};
+              defaultVotes.forEach((v) => {
+                seed[v.id] = { title: v.title, count: 0, createdAt: v.createdAt };
+              });
+              votesRef.set(seed);
+            }
+            renderVotes();
+            return;
+          }
+
+          votesState = entries
+            .map(([id, v]) => {
+              const obj = v || {};
+              return {
+                id,
+                title: typeof obj.title === "string" ? obj.title : "",
+                count: Number(obj.count || 0),
+                createdAt: Number(obj.createdAt || 0)
+              };
+            })
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+          renderVotes();
+        });
+
+        // ---- guestbook: /guestbook/{entryId} = { name, message, createdAt } ----
+        const guestbookRef = db.ref("guestbook");
+        guestbookRef.on("value", (snapshot) => {
+          const data = snapshot.val();
+          const entries = data && typeof data === "object" ? Object.entries(data) : [];
+
+          if (entries.length === 0) {
+            guestbookState = [];
+            renderGuestbook();
+            return;
+          }
+
+          guestbookState = entries
+            .map(([id, v]) => {
+              const obj = v || {};
+              return {
+                id,
+                name: typeof obj.name === "string" ? obj.name : "익명",
+                message: typeof obj.message === "string" ? obj.message : "",
+                createdAt: typeof obj.createdAt === "string" ? obj.createdAt : ""
+              };
+            })
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          renderGuestbook();
+        });
+      } catch (e) {
+        console.error("[Firebase] 초기화 실패:", e);
+        alert("Firebase 연결에 실패했습니다. 콘솔을 확인해 주세요. localStorage 모드로 계속 동작합니다.");
+        firebaseMode = false;
+        db = null;
+      }
+    }
+
     function uid() {
       if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
       return "id-" + Date.now() + "-" + Math.random().toString(16).slice(2);
     }
 
     const defaultVotes = [
-      { id: uid(), title: "후보 1", count: 0 },
-      { id: uid(), title: "후보 2", count: 0 },
-      { id: uid(), title: "후보 3", count: 0 }
+      // Firebase 시딩 시 id가 매번 달라지면(랜덤) 중복 후보가 생길 수 있어 고정 id 사용
+      { id: "candidate_1", title: "후보 1", count: 0, createdAt: 1 },
+      { id: "candidate_2", title: "후보 2", count: 0, createdAt: 2 },
+      { id: "candidate_3", title: "후보 3", count: 0, createdAt: 3 }
     ];
 
     const voteList = document.getElementById("voteList");
@@ -507,6 +650,9 @@
     }
 
     function getVotes() {
+      if (firebaseMode) {
+        return Array.isArray(votesState) ? votesState : [];
+      }
       const saved = readJSON(STORAGE_KEYS.votes, null);
       if (!saved || !Array.isArray(saved) || saved.length === 0) {
         writeJSON(STORAGE_KEYS.votes, defaultVotes);
@@ -516,6 +662,9 @@
     }
 
     function getGuestbook() {
+      if (firebaseMode) {
+        return Array.isArray(guestbookState) ? guestbookState : [];
+      }
       return readJSON(STORAGE_KEYS.guestbook, []);
     }
 
@@ -660,6 +809,31 @@
         return;
       }
 
+      // Firebase 모드: count만 트랜잭션으로 증가(동시성 안전)
+      if (firebaseMode) {
+        const voteCountRef = db.ref(`votes/${id}/count`);
+        voteCountRef.transaction(
+          (current) => (Number(current || 0) + 1),
+          function (error, committed) {
+            if (error) {
+              console.error(error);
+              alert("투표에 실패했습니다. 콘솔을 확인해 주세요.");
+              return;
+            }
+
+            if (committed && !isAdmin()) {
+              votedMap[id] = true;
+              writeJSON(STORAGE_KEYS.votedMap, votedMap);
+            }
+
+            // onValue에서 자동으로 재렌더되지만, 즉시 반영을 위해 한 번 더 호출
+            renderVotes();
+          }
+        );
+        return;
+      }
+
+      // localStorage 모드(대체)
       const votes = getVotes().map((item) => {
         if (item.id === id) {
           return { ...item, count: item.count + 1 };
@@ -684,6 +858,19 @@
         return;
       }
 
+      // Firebase 모드
+      if (firebaseMode) {
+        const id = uid();
+        db.ref(`votes/${id}`).set({
+          title: title,
+          count: 0,
+          createdAt: Date.now()
+        });
+        newVoteTitle.value = "";
+        return;
+      }
+
+      // localStorage 모드(대체)
       const votes = getVotes();
       votes.push({ id: uid(), title: title, count: 0 });
       writeJSON(STORAGE_KEYS.votes, votes);
@@ -705,6 +892,13 @@
         return;
       }
 
+      // Firebase 모드
+      if (firebaseMode) {
+        db.ref(`votes/${id}/title`).set(trimmed);
+        return;
+      }
+
+      // localStorage 모드(대체)
       target.title = trimmed;
       writeJSON(STORAGE_KEYS.votes, votes);
       renderVotes();
@@ -712,6 +906,14 @@
 
     function deleteVote(id) {
       if (!confirm("이 투표 항목을 삭제할까요?")) return;
+
+      // Firebase 모드
+      if (firebaseMode) {
+        db.ref(`votes/${id}`).remove();
+        return;
+      }
+
+      // localStorage 모드(대체)
       const votes = getVotes().filter((item) => item.id !== id);
       writeJSON(STORAGE_KEYS.votes, votes);
       renderVotes();
@@ -719,6 +921,26 @@
 
     function resetVotes() {
       if (!confirm("전체 투표 수를 초기화할까요?")) return;
+
+      // Firebase 모드
+      if (firebaseMode) {
+        const currentVotes = getVotes();
+        if (!currentVotes.length) {
+          alert("데이터를 불러오는 중이거나 투표 항목이 없습니다.");
+          return;
+        }
+
+        // /votes/{id}/count 를 0으로
+        const updates = {};
+        currentVotes.forEach((v) => {
+          updates[`${v.id}/count`] = 0;
+        });
+        db.ref("votes").update(updates);
+        writeJSON(STORAGE_KEYS.votedMap, {});
+        return;
+      }
+
+      // localStorage 모드(대체)
       const reset = getVotes().map((item) => ({ ...item, count: 0 }));
       writeJSON(STORAGE_KEYS.votes, reset);
       writeJSON(STORAGE_KEYS.votedMap, {});
@@ -734,6 +956,21 @@
         return;
       }
 
+      // Firebase 모드
+      if (firebaseMode) {
+        const payload = {
+          name: name.slice(0, 20),
+          message: message.slice(0, 500),
+          createdAt: new Date().toISOString()
+        };
+        db.ref("guestbook").push(payload);
+        guestName.value = "";
+        guestMessage.value = "";
+        alert("전송되었습니다.");
+        return;
+      }
+
+      // localStorage 모드(대체)
       const guestbook = getGuestbook();
       guestbook.unshift({
         id: uid(),
@@ -751,6 +988,14 @@
 
     function deleteGuestbookItem(id) {
       if (!confirm("이 방명록을 삭제할까요?")) return;
+
+      // Firebase 모드
+      if (firebaseMode) {
+        db.ref(`guestbook/${id}`).remove();
+        return;
+      }
+
+      // localStorage 모드(대체)
       const next = getGuestbook().filter((item) => item.id !== id);
       writeJSON(STORAGE_KEYS.guestbook, next);
       renderGuestbook();
@@ -758,6 +1003,14 @@
 
     function clearGuestbook() {
       if (!confirm("방명록 전체를 삭제할까요?")) return;
+
+      // Firebase 모드
+      if (firebaseMode) {
+        db.ref("guestbook").remove();
+        return;
+      }
+
+      // localStorage 모드(대체)
       writeJSON(STORAGE_KEYS.guestbook, []);
       renderGuestbook();
     }
@@ -813,6 +1066,8 @@
       if (e.target === adminModal) closeAdminModal();
     });
 
+    // Firebase 연결 시도(설정값이 없으면 localStorage 모드로 유지)
+    initFirebaseRealtime();
     renderAll();
   </script>
 </body>
